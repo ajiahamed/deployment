@@ -1,23 +1,24 @@
 #!/usr/bin/env bash
 set -e
 
-# --- Utility: Detect OS ---
+# --- Ensure we are root ---
+if [ "$EUID" -ne 0 ]; then
+    echo "Please run as root (sudo $0)"
+    exit 1
+fi
+
+# --- Detection ---
 detect_os() {
-    if command -v apt-get >/dev/null 2>&1; then
-        echo "debian"
-    elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
-        echo "rhel"
-    else
-        echo "unknown"
-    fi
+    if command -v apt-get >/dev/null 2>&1; then echo "debian";
+    elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then echo "rhel";
+    else echo "unknown"; fi
 }
 
 OS_TYPE=$(detect_os)
-TARGET_USER=${SUDO_USER:-$USER}
 
-# --- Functions ---
+# --- Logic Functions ---
 install_docker() {
-    echo "Installing Docker for $OS_TYPE..."
+    echo "--- Installing Docker ($OS_TYPE) ---"
     if [[ "$OS_TYPE" == "debian" ]]; then
         apt update && apt install -y ca-certificates curl
         install -m 0755 -d /etc/apt/keyrings
@@ -32,12 +33,13 @@ install_docker() {
         dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     fi
     systemctl enable --now docker
-    usermod -aG docker "$TARGET_USER"
-    echo "Docker installed successfully."
+    usermod -aG docker "${SUDO_USER:-$USER}"
+    echo "Verification: Running hello-world..."
+    docker run --rm hello-world
 }
 
 uninstall_docker() {
-    echo "Purging Docker..."
+    echo "--- Purging Docker ---"
     systemctl stop docker.socket docker.service || true
     if [[ "$OS_TYPE" == "debian" ]]; then
         apt purge -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
@@ -45,31 +47,26 @@ uninstall_docker() {
         dnf remove -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     fi
     rm -rf /var/lib/docker /var/lib/containerd /etc/docker
-    echo "Docker uninstalled."
 }
 
-# --- Menu Loop ---
-while true; do
-    echo -e "\n--- Docker Manager (Detected OS: $OS_TYPE) ---"
-    echo "1) Install Docker"
-    echo "2) Uninstall Docker"
-    echo "3) Reinstall Docker"
-    echo "4) Check Docker Status"
-    echo "5) Exit"
-    read -p "Select an option [1-5]: " opt
-
-    case $opt in
-        1) install_docker ;;
-        2) uninstall_docker ;;
-        3) uninstall_docker; install_docker ;;
-        4) 
-            if command -v docker >/dev/null 2>&1; then
-                docker --version && systemctl status docker --no-pager | head -n 5
-            else
-                echo "Docker is not installed."
-            fi
-            ;;
-        5) exit 0 ;;
-        *) echo "Invalid option." ;;
-    esac
-done
+# --- Argument/Menu Handling ---
+case "$1" in
+    --install)   install_docker ;;
+    --uninstall) uninstall_docker ;;
+    --reinstall) uninstall_docker; install_docker ;;
+    --check)     docker --version && systemctl status docker --no-pager | head -n 5 ;;
+    *)
+        PS3="Select an action: "
+        options=("Install Docker" "Uninstall Docker" "Reinstall Docker" "Check Status" "Quit")
+        select opt in "${options[@]}"; do
+            case $opt in
+                "Install Docker") install_docker ;;
+                "Uninstall Docker") uninstall_docker ;;
+                "Reinstall Docker") uninstall_docker; install_docker ;;
+                "Check Status") docker --version && systemctl status docker --no-pager | head -n 5 || echo "Not installed." ;;
+                "Quit") break ;;
+                *) echo "Invalid option." ;;
+            esac
+        done
+        ;;
+esac
